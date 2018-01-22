@@ -62,8 +62,8 @@ class Model():
             self.size = size
             self.inputs = tf.placeholder(shape = [None, self.size * 2], dtype = tf.int32)
             self.unrolled = tf.reshape(tf.one_hot(self.inputs, depth = 2, axis = -1), [-1, 4 * self.size])
-            self.fc = fully_connected_layer(self.unrolled, 256, activation = tf.nn.relu, scope = "fc1")
-            self.Q_ = fully_connected_layer(self.fc, self.size, activation = None, scope = "readout")
+            self.hidden = fully_connected_layer(self.unrolled, 256, activation = tf.nn.relu, scope = "fc")
+            self.Q_ = fully_connected_layer(self.hidden, self.size, activation = tf.tanh, scope = "Q")
             self.predict = tf.argmax(self.Q_, axis = -1)
             self.action = tf.placeholder(shape = None, dtype = tf.int32)
             self.action_onehot = tf.one_hot(self.action, self.size, dtype = tf.float32)
@@ -98,7 +98,7 @@ def main():
     HER = True
     shaped_reward = False
     size = 10
-    num_epochs = 20
+    num_epochs = 200
     num_cycles = 50
     num_episodes = 16
     optimisation_steps = 40
@@ -109,7 +109,18 @@ def main():
     epsilon = 0.2
     batch_size = 128
     total_rewards = []
+    total_loss = []
     succeed = 0
+
+    plt.ion()
+    fig = plt.figure()
+    ax = fig.add_subplot(211)
+    plt.title("Episodic Rewards")
+    ax2 = fig.add_subplot(212)
+    plt.title("Q Loss")
+    line = ax.plot(np.zeros(1), np.zeros(1), 'b-')[0]
+    line2 = ax2.plot(np.zeros(1), np.zeros(1), 'b-')[0]
+    fig.canvas.draw()
 
     modelNetwork = Model(size = size, name = "model")
     targetNetwork = Model(size = size, name = "target")
@@ -144,9 +155,6 @@ def main():
                             else:
                                 episode_succeeded = True
                                 succeed += 1
-                            # break
-                        #     env.reset()
-                        #     break
                     for t in range(len(episode_experience)):
                         s, a, r, s_n, g = episode_experience[t]
                         inputs = np.concatenate([s,g],axis = -1)
@@ -162,6 +170,7 @@ def main():
                                 r_n = 0 if final else -1
                                 buff.add(np.reshape(np.array([inputs,a,r_n,new_inputs]),[1,4]))
 
+                mean_loss = []
                 for k in range(optimisation_steps):
                     experience = buff.sample(batch_size)
                     s, a, r, s_next = [np.squeeze(elem, axis = 1) for elem in np.split(experience, 4, 1)]
@@ -169,18 +178,27 @@ def main():
                     s = np.reshape(s, (batch_size, size * 2))
                     s_next = np.array([ss for ss in s_next])
                     s_next = np.reshape(s_next, (batch_size, size * 2))
-                    # Q1 = sess.run(modelNetwork.Q_, feed_dict = {modelNetwork.inputs: s})
                     Q1 = sess.run(modelNetwork.Q_, feed_dict = {modelNetwork.inputs: s_next})
                     Q2 = sess.run(targetNetwork.Q_, feed_dict = {targetNetwork.inputs: s_next})
                     doubleQ = Q2[:, np.argmax(Q1, axis = -1)]
-                    # doubleQ = Q1[np.arange(batch_size),Q1]
                     Q_target = np.clip(r + gamma * doubleQ,  -1. / (1 - gamma), 0)
-                    _ = sess.run(modelNetwork.train_op, feed_dict = {modelNetwork.inputs: s, modelNetwork.Q_next: Q_target, modelNetwork.action: a})
+                    _, loss = sess.run([modelNetwork.train_op, modelNetwork.loss], feed_dict = {modelNetwork.inputs: s, modelNetwork.Q_next: Q_target, modelNetwork.action: a})
+                    mean_loss.append(loss)
+
+                total_loss.append(np.mean(mean_loss))
                 updateTarget(updateOps,sess)
                 total_rewards.append(total_reward)
-    plt.plot(np.array(total_rewards))
-    plt.show()
+                ax.relim()
+                ax.autoscale_view()
+                ax2.relim()
+                ax2.autoscale_view()
+                line.set_data(np.arange(len(total_rewards)), np.array(total_rewards))
+                line2.set_data(np.arange(len(total_loss)), np.array(total_loss))
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                plt.pause(1e-7)
     print("Number of episodes succeeded: {}".format(succeed))
+    raw_input("Press enter...")
 
 if __name__ == "__main__":
     main()
