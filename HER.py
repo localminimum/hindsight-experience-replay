@@ -21,12 +21,12 @@ class Env():
     def step(self, action):
         self.state[action] = 1 - self.state[action]
         if self.shaped_reward:
-            return self.state, -np.sum(np.square(self.state - self.target))
+            return np.copy(self.state), -np.sum(np.square(self.state - self.target))
         else:
             if not np.sum(self.state == self.target) == self.size:
-                return self.state, -1
+                return np.copy(self.state), -1
             else:
-                return self.state, 0
+                return np.copy(self.state), 0
 
     def reset(self, size = None):
         if size is None:
@@ -41,9 +41,6 @@ class Buffer():
         self.buffer_size = buffer_size
 
     def add(self, experience):
-        # if len(self.buffer) + len(experience) >= self.buffer_size:
-        #     overflow = len(self.buffer) + len(experience) - self.buffer_size
-        #     self.buffer = self.buffer[-int(self.buffer_size - overflow):]
         self.buffer.append(experience)
         if len(self.buffer) > self.buffer_size:
             self.buffer = self.buffer[int(0.01 * self.buffer_size):]
@@ -53,7 +50,7 @@ class Buffer():
             experience_buffer = self.buffer
         else:
             experience_buffer = self.buffer * size
-        return np.reshape(np.array(random.sample(experience_buffer,size)),[size,4])
+        return np.copy(np.reshape(np.array(random.sample(experience_buffer,size)),[size,4]))
 
 # Simple 1 layer feed forward neural network
 class Model():
@@ -63,7 +60,7 @@ class Model():
             self.inputs = tf.placeholder(shape = [None, self.size * 2], dtype = tf.int32)
             self.unrolled = tf.reshape(tf.one_hot(self.inputs, depth = 2, axis = -1), [-1, 4 * self.size])
             self.hidden = fully_connected_layer(self.unrolled, 256, activation = tf.nn.relu, scope = "fc")
-            self.Q_ = fully_connected_layer(self.hidden, self.size, activation = tf.tanh, scope = "Q")
+            self.Q_ = fully_connected_layer(self.hidden, self.size, activation = None, scope = "Q")
             self.predict = tf.argmax(self.Q_, axis = -1)
             self.action = tf.placeholder(shape = None, dtype = tf.int32)
             self.action_onehot = tf.one_hot(self.action, self.size, dtype = tf.float32)
@@ -97,14 +94,14 @@ def updateTarget(op_holder,sess):
 def main():
     HER = True
     shaped_reward = False
-    size = 10
-    num_epochs = 200
+    size = 30
+    num_epochs = 20
     num_cycles = 50
     num_episodes = 16
     optimisation_steps = 40
     K = 4
     buffer_size = 1e6
-    tau = 1. - 0.95
+    tau = 1 - 0.95
     gamma = 0.98
     epsilon = 0.2
     batch_size = 128
