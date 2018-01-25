@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import tensorflow as tf
 import numpy as np
 import random
-import tensorflow as tf
+import os
 
 from matplotlib import pyplot as plt
 from tqdm import tqdm
@@ -84,7 +85,7 @@ def updateTargetGraph(tfVars,tau):
     total_vars = len(tfVars)
     op_holder = []
     for idx,var in enumerate(tfVars[0:total_vars//2]):
-        op_holder.append(tfVars[idx+total_vars//2].assign((var.value()*tau) + ((1-tau)*tfVars[idx+total_vars//2].value())))
+        op_holder.append(tfVars[idx+total_vars//2].assign((var.value()*(1. - tau)) + (tau * tfVars[idx+total_vars//2].value())))
     return op_holder
 
 def updateTarget(op_holder,sess):
@@ -94,30 +95,26 @@ def updateTarget(op_holder,sess):
 def main():
     HER = True
     shaped_reward = False
-    size = 30
-    num_epochs = 20
+    size = 10
+    num_epochs = 10
     num_cycles = 50
     num_episodes = 16
     optimisation_steps = 40
     K = 4
     buffer_size = 1e6
-    tau = 1 - 0.95
+    tau = 0.95
     gamma = 0.98
     epsilon = 0.2
     batch_size = 128
     total_rewards = []
     total_loss = []
     succeed = 0
-
-    plt.ion()
-    fig = plt.figure()
-    ax = fig.add_subplot(211)
-    plt.title("Episodic Rewards")
-    ax2 = fig.add_subplot(212)
-    plt.title("Q Loss")
-    line = ax.plot(np.zeros(1), np.zeros(1), 'b-')[0]
-    line2 = ax2.plot(np.zeros(1), np.zeros(1), 'b-')[0]
-    fig.canvas.draw()
+    save_model = True
+    model_dir = "./train"
+    train = False
+    num_test = 1000
+    if not os.path.isdir(model_dir):
+        os.mkdir(model_dir)
 
     modelNetwork = Model(size = size, name = "model")
     targetNetwork = Model(size = size, name = "target")
@@ -125,77 +122,109 @@ def main():
     updateOps = updateTargetGraph(trainables, tau)
     env = Env(size = size, shaped_reward = shaped_reward)
     buff = Buffer(buffer_size)
+
+    if train:
+        plt.ion()
+        fig = plt.figure()
+        ax = fig.add_subplot(211)
+        plt.title("Episodic Rewards")
+        ax2 = fig.add_subplot(212)
+        plt.title("Q Loss")
+        line = ax.plot(np.zeros(1), np.zeros(1), 'b-')[0]
+        line2 = ax2.plot(np.zeros(1), np.zeros(1), 'b-')[0]
+        fig.canvas.draw()
+        with tf.Session() as sess:
+            sess.run(modelNetwork.init_op)
+            sess.run(targetNetwork.init_op)
+            for i in tqdm(range(num_epochs), total = num_epochs):
+                for j in range(num_cycles):
+                    total_reward = 0.0
+                    for n in range(num_episodes):
+                        env.reset()
+                        episode_experience = []
+                        episode_succeeded = False
+                        for t in range(size):
+                            s = np.copy(env.state)
+                            g = np.copy(env.target)
+                            inputs = np.concatenate([s,g],axis = -1)
+                            action = sess.run(modelNetwork.predict,feed_dict = {modelNetwork.inputs:[inputs]})
+                            action = action[0]
+                            if np.random.rand(1) < epsilon:
+                                action = np.random.randint(size)
+                            s_next, reward = env.step(action)
+                            episode_experience.append((s,action,reward,s_next,g))
+                            total_reward += reward
+                            if reward == 0:
+                                if episode_succeeded:
+                                    continue
+                                else:
+                                    episode_succeeded = True
+                                    succeed += 1
+                        for t in range(size):
+                            s, a, r, s_n, g = episode_experience[t]
+                            inputs = np.concatenate([s,g],axis = -1)
+                            new_inputs = np.concatenate([s_next,g],axis = -1)
+                            buff.add(np.reshape(np.array([inputs,a,r,new_inputs]),[1,4]))
+                            if HER:
+                                for k in range(K):
+                                    future = np.random.randint(t, size)
+                                    _, _, _, g_n, _ = episode_experience[future]
+                                    inputs = np.concatenate([s,g_n],axis = -1)
+                                    new_inputs = np.concatenate([s_n, g_n],axis = -1)
+                                    final = np.sum(np.array(s_n) == np.array(g_n)) == size
+                                    r_n = 0 if final else -1
+                                    buff.add(np.reshape(np.array([inputs,a,r_n,new_inputs]),[1,4]))
+
+                    mean_loss = []
+                    for k in range(optimisation_steps):
+                        experience = buff.sample(batch_size)
+                        s, a, r, s_next = [np.squeeze(elem, axis = 1) for elem in np.split(experience, 4, 1)]
+                        s = np.array([ss for ss in s])
+                        s = np.reshape(s, (batch_size, size * 2))
+                        s_next = np.array([ss for ss in s_next])
+                        s_next = np.reshape(s_next, (batch_size, size * 2))
+                        Q1 = sess.run(modelNetwork.Q_, feed_dict = {modelNetwork.inputs: s_next})
+                        Q2 = sess.run(targetNetwork.Q_, feed_dict = {targetNetwork.inputs: s_next})
+                        doubleQ = Q2[:, np.argmax(Q1, axis = -1)]
+                        Q_target = np.clip(r + gamma * doubleQ,  -1. / (1 - gamma), 0)
+                        _, loss = sess.run([modelNetwork.train_op, modelNetwork.loss], feed_dict = {modelNetwork.inputs: s, modelNetwork.Q_next: Q_target, modelNetwork.action: a})
+                        mean_loss.append(loss)
+
+                    total_loss.append(np.mean(mean_loss))
+                    updateTarget(updateOps,sess)
+                    total_rewards.append(total_reward)
+                    ax.relim()
+                    ax.autoscale_view()
+                    ax2.relim()
+                    ax2.autoscale_view()
+                    line.set_data(np.arange(len(total_rewards)), np.array(total_rewards))
+                    line2.set_data(np.arange(len(total_loss)), np.array(total_loss))
+                    fig.canvas.draw()
+                    fig.canvas.flush_events()
+                    plt.pause(1e-7)
+            if save_model:
+                saver = tf.train.Saver()
+                saver.save(sess, os.path.join(model_dir, "model.ckpt"))
+        print("Number of episodes succeeded: {}".format(succeed))
+        raw_input("Press enter...")
     with tf.Session() as sess:
-        sess.run(modelNetwork.init_op)
-        sess.run(targetNetwork.init_op)
-        for i in tqdm(range(num_epochs), total = num_epochs):
-            for j in range(num_cycles):
-                total_reward = 0.0
-                for n in range(num_episodes):
-                    env.reset()
-                    episode_experience = []
-                    episode_succeeded = False
-                    for t in range(size):
-                        s = np.copy(env.state)
-                        g = np.copy(env.target)
-                        inputs = np.concatenate([s,g],axis = -1)
-                        action = sess.run(modelNetwork.predict,feed_dict = {modelNetwork.inputs:[inputs]})
-                        action = action[0]
-                        if np.random.rand(1) < epsilon:
-                            action = np.random.randint(size)
-                        s_next, reward = env.step(action)
-                        episode_experience.append((s,action,reward,s_next,g))
-                        total_reward += reward
-                        if reward == 0:
-                            if episode_succeeded:
-                                continue
-                            else:
-                                episode_succeeded = True
-                                succeed += 1
-                    for t in range(len(episode_experience)):
-                        s, a, r, s_n, g = episode_experience[t]
-                        inputs = np.concatenate([s,g],axis = -1)
-                        new_inputs = np.concatenate([s_next,g],axis = -1)
-                        buff.add(np.reshape(np.array([inputs,a,r,new_inputs]),[1,4]))
-                        if HER:
-                            for k in range(K):
-                                future = np.random.randint(t, size)
-                                _, _, _, g_n, _ = episode_experience[future]
-                                inputs = np.concatenate([s,g_n],axis = -1)
-                                new_inputs = np.concatenate([s_n, g_n],axis = -1)
-                                final = np.sum(np.array(s_n) == np.array(g_n)) == size
-                                r_n = 0 if final else -1
-                                buff.add(np.reshape(np.array([inputs,a,r_n,new_inputs]),[1,4]))
-
-                mean_loss = []
-                for k in range(optimisation_steps):
-                    experience = buff.sample(batch_size)
-                    s, a, r, s_next = [np.squeeze(elem, axis = 1) for elem in np.split(experience, 4, 1)]
-                    s = np.array([ss for ss in s])
-                    s = np.reshape(s, (batch_size, size * 2))
-                    s_next = np.array([ss for ss in s_next])
-                    s_next = np.reshape(s_next, (batch_size, size * 2))
-                    Q1 = sess.run(modelNetwork.Q_, feed_dict = {modelNetwork.inputs: s_next})
-                    Q2 = sess.run(targetNetwork.Q_, feed_dict = {targetNetwork.inputs: s_next})
-                    doubleQ = Q2[:, np.argmax(Q1, axis = -1)]
-                    Q_target = np.clip(r + gamma * doubleQ,  -1. / (1 - gamma), 0)
-                    _, loss = sess.run([modelNetwork.train_op, modelNetwork.loss], feed_dict = {modelNetwork.inputs: s, modelNetwork.Q_next: Q_target, modelNetwork.action: a})
-                    mean_loss.append(loss)
-
-                total_loss.append(np.mean(mean_loss))
-                updateTarget(updateOps,sess)
-                total_rewards.append(total_reward)
-                ax.relim()
-                ax.autoscale_view()
-                ax2.relim()
-                ax2.autoscale_view()
-                line.set_data(np.arange(len(total_rewards)), np.array(total_rewards))
-                line2.set_data(np.arange(len(total_loss)), np.array(total_loss))
-                fig.canvas.draw()
-                fig.canvas.flush_events()
-                plt.pause(1e-7)
-    print("Number of episodes succeeded: {}".format(succeed))
-    raw_input("Press enter...")
+        saver = tf.train.Saver()
+        saver.restore(sess, os.path.join(model_dir, "model.ckpt"))
+        for i in range(num_test):
+            env.reset()
+            print("current state: {}".format(env.state))
+            for t in range(size):
+                s = np.copy(env.state)
+                g = np.copy(env.target)
+                inputs = np.concatenate([s,g],axis = -1)
+                action = sess.run(targetNetwork.predict,feed_dict = {targetNetwork.inputs:[inputs]})
+                action = action[0]
+                s_next, reward = env.step(action)
+                print("current state: {}".format(env.state))
+                if reward == 0:
+                    print("Success!")
+                    break
+            raw_input("Press enter...")
 
 if __name__ == "__main__":
     main()
