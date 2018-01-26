@@ -44,7 +44,7 @@ class Buffer():
     def add(self, experience):
         self.buffer.append(experience)
         if len(self.buffer) > self.buffer_size:
-            self.buffer = self.buffer[int(0.01 * self.buffer_size):]
+            self.buffer = self.buffer[int(0.0001 * self.buffer_size):]
 
     def sample(self,size):
         if len(self.buffer) >= size:
@@ -58,10 +58,10 @@ class Model():
     def __init__(self, size, name):
         with tf.variable_scope(name):
             self.size = size
-            self.inputs = tf.placeholder(shape = [None, self.size * 2], dtype = tf.int32)
-            self.unrolled = tf.reshape(tf.one_hot(self.inputs, depth = 2, axis = -1), [-1, 4 * self.size])
-            self.hidden = fully_connected_layer(self.unrolled, 256, activation = tf.nn.relu, scope = "fc")
-            self.Q_ = fully_connected_layer(self.hidden, self.size, activation = None, scope = "Q")
+            self.inputs = tf.placeholder(shape = [None, self.size * 2], dtype = tf.float32)
+            init = tf.contrib.layers.variance_scaling_initializer(factor = 1.0, mode = "FAN_AVG", uniform = False)
+            self.hidden = fully_connected_layer(self.inputs, 256, activation = tf.nn.relu, init = init, scope = "fc")
+            self.Q_ = fully_connected_layer(self.hidden, self.size, activation = None, scope = "Q", bias = False)
             self.predict = tf.argmax(self.Q_, axis = -1)
             self.action = tf.placeholder(shape = None, dtype = tf.int32)
             self.action_onehot = tf.one_hot(self.action, self.size, dtype = tf.float32)
@@ -69,14 +69,22 @@ class Model():
             self.Q_next = tf.placeholder(shape=None, dtype=tf.float32)
             self.loss = tf.reduce_sum(tf.square(self.Q_next - self.Q))
             self.optimizer = tf.train.AdamOptimizer(learning_rate=1e-3)
+            # grads = self.optimizer.compute_gradients(self.loss)
+            # capped = []
+            # for g,v in grads:
+            #     if g is not None:
+            #         capped.append((tf.clip_by_value(g, -1., 1.), v))
+            # self.train_op = self.optimizer.apply_gradients(capped)
             self.train_op = self.optimizer.minimize(self.loss)
             self.init_op = tf.global_variables_initializer()
 
-def fully_connected_layer(inputs, dim, activation = None, scope = "fc", reuse = None):
+def fully_connected_layer(inputs, dim, activation = None, scope = "fc", reuse = None, init = tf.contrib.layers.xavier_initializer(), bias = True):
     with tf.variable_scope(scope, reuse = reuse):
-        w_ = tf.get_variable("W_", [inputs.shape[-1], dim], initializer = tf.contrib.layers.xavier_initializer())
-        b = tf.get_variable("b_", dim, initializer = tf.zeros_initializer())
-        outputs = tf.matmul(inputs, w_) + b
+        w_ = tf.get_variable("W_", [inputs.shape[-1], dim], initializer = init)
+        outputs = tf.matmul(inputs, w_)
+        if bias:
+            b = tf.get_variable("b_", dim, initializer = tf.zeros_initializer())
+            outputs += b
         if activation is not None:
             outputs = activation(outputs)
         return outputs
@@ -95,24 +103,29 @@ def updateTarget(op_holder,sess):
 def main():
     HER = True
     shaped_reward = False
-    size = 10
-    num_epochs = 10
+    size = 20
+    num_epochs = 20
     num_cycles = 50
     num_episodes = 16
     optimisation_steps = 40
-    K = 4
+    K = 8
     buffer_size = 1e6
     tau = 0.95
     gamma = 0.98
-    epsilon = 0.2
+    epsilon = 0.0
     batch_size = 128
+    add_final = False
+
     total_rewards = []
     total_loss = []
+    success_rate = []
     succeed = 0
+
     save_model = True
     model_dir = "./train"
-    train = False
+    train = True
     num_test = 1000
+
     if not os.path.isdir(model_dir):
         os.mkdir(model_dir)
 
@@ -127,7 +140,9 @@ def main():
         plt.ion()
         fig = plt.figure()
         ax = fig.add_subplot(211)
-        plt.title("Episodic Rewards")
+        plt.title("Success Rate")
+        ax.set_ylim([0,1.])
+        # plt.title("Episodic Rewards")
         ax2 = fig.add_subplot(212)
         plt.title("Q Loss")
         line = ax.plot(np.zeros(1), np.zeros(1), 'b-')[0]
@@ -139,6 +154,7 @@ def main():
             for i in tqdm(range(num_epochs), total = num_epochs):
                 for j in range(num_cycles):
                     total_reward = 0.0
+                    successes = []
                     for n in range(num_episodes):
                         env.reset()
                         episode_experience = []
@@ -160,6 +176,7 @@ def main():
                                 else:
                                     episode_succeeded = True
                                     succeed += 1
+                        successes.append(episode_succeeded)
                         for t in range(size):
                             s, a, r, s_n, g = episode_experience[t]
                             inputs = np.concatenate([s,g],axis = -1)
@@ -174,6 +191,13 @@ def main():
                                     final = np.sum(np.array(s_n) == np.array(g_n)) == size
                                     r_n = 0 if final else -1
                                     buff.add(np.reshape(np.array([inputs,a,r_n,new_inputs]),[1,4]))
+                                # if add_final:
+                                #     _, _, _, g_n, _ = episode_experience[-1]
+                                #     inputs = np.concatenate([s,g_n],axis = -1)
+                                #     new_inputs = np.concatenate([s_n, g_n],axis = -1)
+                                #     final = np.sum(np.array(s_n) == np.array(g_n)) == size
+                                #     r_n = 0 if final else -1
+                                #     buff.add(np.reshape(np.array([inputs,a,r_n,new_inputs]),[1,4]))
 
                     mean_loss = []
                     for k in range(optimisation_steps):
@@ -190,6 +214,7 @@ def main():
                         _, loss = sess.run([modelNetwork.train_op, modelNetwork.loss], feed_dict = {modelNetwork.inputs: s, modelNetwork.Q_next: Q_target, modelNetwork.action: a})
                         mean_loss.append(loss)
 
+                    success_rate.append(np.mean(successes))
                     total_loss.append(np.mean(mean_loss))
                     updateTarget(updateOps,sess)
                     total_rewards.append(total_reward)
@@ -197,7 +222,8 @@ def main():
                     ax.autoscale_view()
                     ax2.relim()
                     ax2.autoscale_view()
-                    line.set_data(np.arange(len(total_rewards)), np.array(total_rewards))
+                    line.set_data(np.arange(len(success_rate)), np.array(success_rate))
+                    # line.set_data(np.arange(len(total_rewards)), np.array(total_rewards))
                     line2.set_data(np.arange(len(total_loss)), np.array(total_loss))
                     fig.canvas.draw()
                     fig.canvas.flush_events()
