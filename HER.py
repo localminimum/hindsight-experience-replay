@@ -180,7 +180,7 @@ def main():
                         for t in range(size):
                             s, a, r, s_n, g = episode_experience[t]
                             inputs = np.concatenate([s,g],axis = -1)
-                            new_inputs = np.concatenate([s_next,g],axis = -1)
+                            new_inputs = np.concatenate([s_n,g],axis = -1)
                             buff.add(np.reshape(np.array([inputs,a,r,new_inputs]),[1,4]))
                             if HER:
                                 for k in range(K):
