@@ -69,12 +69,6 @@ class Model():
             self.Q_next = tf.placeholder(shape=None, dtype=tf.float32)
             self.loss = tf.reduce_sum(tf.square(self.Q_next - self.Q))
             self.optimizer = tf.train.AdamOptimizer(learning_rate=1e-3)
-            # grads = self.optimizer.compute_gradients(self.loss)
-            # capped = []
-            # for g,v in grads:
-            #     if g is not None:
-            #         capped.append((tf.clip_by_value(g, -1., 1.), v))
-            # self.train_op = self.optimizer.apply_gradients(capped)
             self.train_op = self.optimizer.minimize(self.loss)
             self.init_op = tf.global_variables_initializer()
 
@@ -103,12 +97,12 @@ def updateTarget(op_holder,sess):
 def main():
     HER = True
     shaped_reward = False
-    size = 20
-    num_epochs = 20
+    size = 15
+    num_epochs = 5
     num_cycles = 50
     num_episodes = 16
     optimisation_steps = 40
-    K = 8
+    K = 4
     buffer_size = 1e6
     tau = 0.95
     gamma = 0.98
@@ -124,7 +118,6 @@ def main():
     save_model = True
     model_dir = "./train"
     train = True
-    num_test = 1000
 
     if not os.path.isdir(model_dir):
         os.mkdir(model_dir)
@@ -142,7 +135,6 @@ def main():
         ax = fig.add_subplot(211)
         plt.title("Success Rate")
         ax.set_ylim([0,1.])
-        # plt.title("Episodic Rewards")
         ax2 = fig.add_subplot(212)
         plt.title("Q Loss")
         line = ax.plot(np.zeros(1), np.zeros(1), 'b-')[0]
@@ -189,15 +181,11 @@ def main():
                                     inputs = np.concatenate([s,g_n],axis = -1)
                                     new_inputs = np.concatenate([s_n, g_n],axis = -1)
                                     final = np.sum(np.array(s_n) == np.array(g_n)) == size
-                                    r_n = 0 if final else -1
+                                    if shaped_reward:
+                                        r_n = 0 if final else -np.sum(np.square(np.array(s_n) == np.array(g_n)))
+                                    else:
+                                        r_n = 0 if final else -1
                                     buff.add(np.reshape(np.array([inputs,a,r_n,new_inputs]),[1,4]))
-                                # if add_final:
-                                #     _, _, _, g_n, _ = episode_experience[-1]
-                                #     inputs = np.concatenate([s,g_n],axis = -1)
-                                #     new_inputs = np.concatenate([s_n, g_n],axis = -1)
-                                #     final = np.sum(np.array(s_n) == np.array(g_n)) == size
-                                #     r_n = 0 if final else -1
-                                #     buff.add(np.reshape(np.array([inputs,a,r_n,new_inputs]),[1,4]))
 
                     mean_loss = []
                     for k in range(optimisation_steps):
@@ -236,9 +224,10 @@ def main():
     with tf.Session() as sess:
         saver = tf.train.Saver()
         saver.restore(sess, os.path.join(model_dir, "model.ckpt"))
-        for i in range(num_test):
+        while True:
             env.reset()
-            print("current state: {}".format(env.state))
+            print("Initial State:\t{}".format(env.state))
+            print("Goal:\t{}".format(env.target))
             for t in range(size):
                 s = np.copy(env.state)
                 g = np.copy(env.target)
@@ -246,7 +235,7 @@ def main():
                 action = sess.run(targetNetwork.predict,feed_dict = {targetNetwork.inputs:[inputs]})
                 action = action[0]
                 s_next, reward = env.step(action)
-                print("current state: {}".format(env.state))
+                print("State at step {}: {}".format(t, env.state))
                 if reward == 0:
                     print("Success!")
                     break

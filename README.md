@@ -1,7 +1,5 @@
 # hindsight-experience-replay
-Hindsight Experience Replay - Bit flipping experiment in Tensorflow.
-
-A very simple implementation of https://arxiv.org/pdf/1707.01495.pdf bit flipping experiment in Tensorflow.
+[Hindsight Experience Replay](https://arxiv.org/pdf/1707.01495.pdf) - Bit flipping experiment in Tensorflow. Check this [blog post](https://medium.com/p/547fce2b3305/) of mine explaining HER!
 
 This implementation includes:
   * Double DQN with 1 hidden layer of size 256.
